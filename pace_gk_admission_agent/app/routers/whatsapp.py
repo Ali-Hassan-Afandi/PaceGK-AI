@@ -103,12 +103,31 @@ async def _handle_admin_command(text: str, sender_phone: str) -> Optional[str]:
         db.close()
 
 
+
 @router.get("/webhook")
 async def verify_webhook(request: Request):
-    token = request.query_params.get("token")
-    if token == settings.whatsapp_verify_token:
-        return Response(content="ok", media_type="text/plain")
-    return Response(status_code=403, content="Invalid verification token")
+    mode = request.query_params.get("hub.mode")
+    token = request.query_params.get("hub.verify_token")
+    challenge = request.query_params.get("hub.challenge")
+
+    if (
+        mode == "subscribe"
+        and settings.whatsapp_verify_token
+        and token == settings.whatsapp_verify_token
+        and challenge is not None
+    ):
+        return Response(
+            content=challenge,
+            status_code=200,
+            media_type="text/plain",
+        )
+
+    return Response(
+        status_code=403,
+        content="Invalid verification token or mode",
+        media_type="text/plain",
+    )
+
 
 
 @router.post("/webhook")
