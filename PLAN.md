@@ -11,7 +11,7 @@
 Build a **real-time chatbot + admission agent** for **PACE GK Academy** that handles the complete WhatsApp-based admission funnel:
 
 1. Student asks for admission → chatbot responds.
-2. Chatbot asks for the **specific admission batch** (sourced from `AdmissionAgent` posters).
+2. Chatbot asks for the **specific admission batch** (sourced from `AdmissionDocs` posters).
 3. Chatbot drives the **admission form**:
    - Name
    - Father name
@@ -39,17 +39,17 @@ Build a **real-time chatbot + admission agent** for **PACE GK Academy** that han
 - `PRD.md` — product requirements.
 - `Spec.md` — specifications.
 - `DataDocs\` — 16 `.docx` academy knowledge-base files (about, FAQ, policies, subjects, testimonials, etc.).
-- `AdmissionAgent\` — admission posters:
+- `AdmissionDocs\` — admission posters:
   - `NOV26-1A.jpeg`
   - `NOV26-1B.jpeg`
   - `NOV26-1C.jpeg`
-- **Community link:** will be added inside `AdmissionAgent\` folder along with the pictures/poster for the admission session in specific batch. Currently, **one community link is being added for checking the system**.
+- **Community link:** will be added inside `AdmissionDocs\` folder along with the pictures/poster for the admission session in specific batch. Currently, **one community link is being added for checking the system**.
 
 ---
 
 ## 3. Updated Requirement — Community Link Handling
 
-- The **community link** must be placed inside the `AdmissionAgent` folder alongside the admission posters (e.g., `NOV26-1A.jpeg`, `NOV26-1B.jpeg`, `NOV26-1C.jpeg` and the community link file/reference).
+- The **community link** must be placed inside the `AdmissionDocs` folder alongside the admission posters (e.g., `NOV26-1A.jpeg`, `NOV26-1B.jpeg`, `NOV26-1C.jpeg` and the community link file/reference).
 - Currently, **one community link** is being added for **system checking**.
 - Post-approval, the bot sends this community link to the student.
 
