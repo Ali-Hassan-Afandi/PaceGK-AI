@@ -1,11 +1,22 @@
 from contextlib import asynccontextmanager
+from typing import Any, Dict
 
 from fastapi import FastAPI
+from pydantic import BaseModel
 
 from .database import Base, engine, SessionLocal
 from .models import Batch, Student  # noqa: F401
-from .routers.whatsapp import router as whatsapp_router
+from .routers.whatsapp import agent, router as whatsapp_router
 from .services.batch_service import create_batch, get_batches
+
+
+class AdmissionChatRequest(BaseModel):
+    phone_number: str
+    message: str
+
+
+class AdmissionChatResponse(BaseModel):
+    reply: str
 
 
 DEMO_BATCHES = [
@@ -43,6 +54,21 @@ app = FastAPI(
 )
 
 app.include_router(whatsapp_router)
+
+
+@app.post("/admission/chat")
+async def admission_chat(payload: AdmissionChatRequest) -> Dict[str, Any]:
+    """Internal endpoint used by the general-knowledge chatbot to hand an
+    admission-related turn over to the admission agent (state machine).
+
+    The admission agent owns the remaining student process:
+    batch selection -> admission form -> fee submission -> human approval -> community link.
+    """
+    reply = await agent.generate_reply(
+        messages=[{"role": "user", "content": payload.message}],
+        phone_number=payload.phone_number,
+    )
+    return {"reply": reply}
 
 
 @app.get("/health")
