@@ -41,12 +41,17 @@ uvicorn app.main:app --reload
 
 ## Deploy to Railway (WhatsApp webhook testing)
 
-The repo ships with a Railway deploy config at `railway.json` (Nixpacks builder) and a
+The repo ships with a Railway deploy config at `pace_gk_admission_agent/railway.json` (Nixpacks builder) and a
 start command of `uvicorn app.main:app --host 0.0.0.0 --port $PORT`.
+
+> **Important — build context:** the Python app lives in the `pace_gk_admission_agent/` subdirectory.
+> Railway must be pointed at that folder, otherwise the build runs from the repository root and fails
+> ("Python application lives in a subdirectory… Railpack found no recognizable project files").
 
 1. Push this repository to GitHub (already done here).
 2. Create a new project on [Railway](https://railway.app) → **Deploy from GitHub repo**.
-3. In the service settings, set the **Root Directory** to `pace_gk_admission_agent`.
+3. In the service settings, set the **Root Directory** to `pace_gk_admission_agent`
+   (the folder containing `app/`, `requirements.txt`, `railway.json`).
 4. Add the required environment variables (see `.env.example`) in the Railway service:
    - `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `WHATSAPP_FROM_NUMBER`, `WHATSAPP_PHONE_NUMBER_ID`,
      `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_VERIFY_TOKEN`
