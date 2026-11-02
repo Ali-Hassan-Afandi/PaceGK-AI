@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -13,6 +13,7 @@ from .services.batch_service import create_batch, get_batches
 class AdmissionChatRequest(BaseModel):
     phone_number: str
     message: str
+    media_url: Optional[str] = None
 
 
 class AdmissionChatResponse(BaseModel):
@@ -67,6 +68,7 @@ async def admission_chat(payload: AdmissionChatRequest) -> Dict[str, Any]:
     reply = await agent.generate_reply(
         messages=[{"role": "user", "content": payload.message}],
         phone_number=payload.phone_number,
+        media_url=payload.media_url,
     )
     return {"reply": reply}
 

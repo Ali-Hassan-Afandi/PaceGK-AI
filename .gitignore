@@ -12,5 +12,6 @@ build/
 .coverage
 .pytest_cache/
 *.db
+admission_data/
 .DS_Store
 Thumbs.db
