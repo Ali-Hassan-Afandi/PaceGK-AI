@@ -12,22 +12,28 @@ funnel over chat:
 Student asks about admission
         │
         ▼
-Chatbot asks / detects admission batch
+Chatbot answers general academy info / asks about admission
+        │
+        ▼
+Admission agent asks / detects admission batch
         │
         ▼
 Batch confirmed
         │
         ▼
-Admission form details collected
+Admission agent takes student input -> asks for fee paid picture
         │
         ▼
-Fee submission received
+Fee payment picture submitted -> FEE_SUBMITTED (human verification)
         │
         ▼
 Human-in-the-loop approval (admin WhatsApp commands)
         │
         ▼
 Fee categorized → Approved → Community link → Confirmation
+        │
+        ▼
+Admission batch data sheet created (all registered students of the batch)
 ```
 
 ## 2. High-Level Layout
@@ -42,7 +48,7 @@ pace_gk_admission_agent/
 │   ├── schemas/                 # Pydantic request/response schemas
 │   ├── routers/                 # HTTP routes (WhatsApp webhook, admin commands)
 │   ├── agents/                  # AdmissionAgent (LLM + deterministic flow)
-│   ├── services/                # Business logic (admission, batch, approval, fee)
+│   ├── services/                # Business logic (admission, batch, approval, fee, export)
 │   └── utils/                   # WhatsApp sender (Twilio / Meta / mock)
 ├── requirements.txt
 ├── .env.example
@@ -96,7 +102,7 @@ agent:
 
 ```
 General chatbot
-        │  POST /admission/chat  { phone_number, message }
+        │  POST /admission/chat  { phone_number, message, media_url? }
         ▼
 AdmissionAgent.generate_reply
         └─ same state machine as the WhatsApp webhook path
@@ -110,15 +116,13 @@ Student statuses used by the agent (`app/agents/admission_agent.py`):
 
 ```
 INQUIRY
-    → (admission intent + batch code match, or LLM batch question)
-    → AWAITING_BATCH
-        → (batch code chosen) → BATCH_CONFIRMED
-            → (form details asked) → FORM_FILL
-                → (form + fee submitted) → FEE_SUBMITTED
-                    → (admin approves) → FEE_CATEGORIZED
-                        → (approved) → APPROVED
-                            → (community link sent) → CONFIRMED
-                                → (next cycle) → INQUIRY
+    → (admission intent) → AWAITING_BATCH
+        → (batch chosen) → BATCH_CONFIRMED
+            → (admission details / fee picture submitted) → FEE_SUBMITTED
+                → (admin approves) → FEE_CATEGORIZED
+                    → (approved) → APPROVED
+                        → (community link sent) → CONFIRMED
+                            → (next cycle) → INQUIRY
             → (admin rejects) → REJECTED
 ```
 
@@ -126,19 +130,28 @@ Key transitions and bot behaviour:
 
 | Status | Bot behaviour | Exit |
 |---|---|---|
-| `INQUIRY` | Answer admission queries / ask batch | → `AWAITING_BATCH` |
+| `INQUIRY` | Answer general academy questions / ask about admission | → `AWAITING_BATCH` |
 | `AWAITING_BATCH` | Ask for batch code (or LLM-assisted) | → `BATCH_CONFIRMED` / stay |
-| `BATCH_CONFIRMED` | Ask for admission form details | → `FORM_FILL` |
-| `FORM_FILL` | Collect form fields; fee submission step | → `FEE_SUBMITTED` |
-| `FEE_SUBMITTED` | Save to DB datasheet | → human approval |
+| `BATCH_CONFIRMED` | Ask for admission details + fee paid picture | → `FEE_SUBMITTED` |
+| `FEE_SUBMITTED` | Fee picture received → queue for human verification | → human approval |
 | `FEE_CATEGORIZED` | Apply fee tier | → `APPROVED` |
-| `APPROVED` | Send WhatsApp community link | → `CONFIRMED` |
+| `APPROVED` | Send WhatsApp community link; prepare batch data sheet | → `CONFIRMED` |
 | `CONFIRMED` | Send confirmation; next cycle resets to `INQUIRY` |
 | `REJECTED` | Decision recorded (reason optional) | — |
 
+Notes:
+
+- When the student sends the **fee payment picture** (WhatsApp image/document) while the
+  admission is in `BATCH_CONFIRMED` / `FORM_FILL`, the agent records the fee picture
+  (`fee_paid_pic_url`), moves the student to `FEE_SUBMITTED` and asks for human verification.
+- After the human (admin via `APPROVE <student_phone> <CATEGORY>`) verifies the fee, the
+  approval service applies the fee category and the router prepares the **admission batch
+  data sheet** (`app/services/admission_export_service.py`) — one file per batch containing
+  all registered (approved) students of that batch.
+
 ## 6. LLM Provider Strategy
 
-`AdmissionAgent` supports OpenAI (`gpt-4o-mini`) and Groq (`llama-3.3-70b-versatile`)
+`AdmissionAgent` supports OpenAI (`gpt-4o-mini`) and Groq (`openai/gpt-oss-120b`)
 via async clients; provider is chosen automatically from configured keys. When no LLM
 key is configured, deterministic fallbacks are used (batch question / default reply).
 
