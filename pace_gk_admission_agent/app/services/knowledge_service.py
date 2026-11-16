@@ -105,6 +105,7 @@ def _find_source_root(leaf_name: str) -> Optional[Path]:
         Path("/DataDocs"),
         Path("/app/DataDocs"),
         Path("/repo") / leaf_name,
+        start / "pace_gk_admission_agent" / leaf_name,
     ]
     for candidate in candidates:
         try:
@@ -371,6 +372,13 @@ def _build_default_knowledge_base() -> KnowledgeBase:
             continue
         base = KnowledgeBase.from_directory(str(root), source_type=source_type)
         kb.chunks.extend(base.chunks)
+        logger.info(
+            "Knowledge source resolved: %s -> %s (source_type=%s) chunks=%d",
+            source_type,
+            root,
+            source_type,
+            len(base.chunks),
+        )
     logger.info("Default knowledge base ready with %d chunks", len(kb.chunks))
     return kb
 
