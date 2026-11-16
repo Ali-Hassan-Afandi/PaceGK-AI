@@ -88,6 +88,20 @@ def _resolve_path(root: str) -> Path:
     return parent if parent.exists() else path
 
 
+def _find_source_root(leaf_name: str) -> Optional[Path]:
+    """Locate a source folder by walking up from the current working directory.
+
+    Tolerates running from a subfolder (e.g. ``pace_gk_admission_agent/`` locally
+    or ``/app`` on Railway) as long as the documented source folder exists somewhere
+    up the tree (e.g. ``DataDocs/``, ``AdmissionDocs/`` at the repository root).
+    """
+    start = Path.cwd().resolve()
+    for candidate in [start, *start.parents]:
+        if (candidate / leaf_name).is_dir():
+            return candidate / leaf_name
+    return None
+
+
 def _keyword_score(query_tokens: set, text_tokens: set) -> float:
     if not query_tokens:
         return 0.0
@@ -217,6 +231,15 @@ class KnowledgeBase:
                     kb.chunks.extend(
                         _split_chunks(text, f"{stype}/{path.name}", stype, path.stem)
                     )
+            elif suffix in (".txt", ".md"):
+                try:
+                    text = path.read_text(encoding="utf-8", errors="ignore")
+                except Exception:
+                    logger.exception("Failed to read text source at %s", path)
+                    continue
+                kb.chunks.extend(
+                    _split_chunks(text, f"{stype}/{path.name}", stype, path.stem)
+                )
         logger.info("Knowledge base loaded with %d chunks from %s", len(kb.chunks), root)
         return kb
 
@@ -307,12 +330,18 @@ _knowledge_base: Optional[KnowledgeBase] = None
 
 def _build_default_knowledge_base() -> KnowledgeBase:
     kb = KnowledgeBase()
-    roots = [
-        (settings.knowledge_dir, SOURCE_TYPE_ACADEMY),
-        (settings.admission_docs_dir, SOURCE_TYPE_ADMISSION),
+    sources = [
+        (SOURCE_TYPE_ACADEMY, "DataDocs"),
+        (SOURCE_TYPE_ADMISSION, "AdmissionDocs"),
     ]
-    for root, source_type in roots:
-        base = KnowledgeBase.from_directory(root, source_type=source_type)
+    for source_type, leaf_name in sources:
+        root = _find_source_root(leaf_name)
+        if root is None:
+            configured = (
+                settings.knowledge_dir if source_type == SOURCE_TYPE_ACADEMY else settings.admission_docs_dir
+            )
+            root = _resolve_path(configured)
+        base = KnowledgeBase.from_directory(str(root), source_type=source_type)
         kb.chunks.extend(base.chunks)
     logger.info("Default knowledge base ready with %d chunks", len(kb.chunks))
     return kb
