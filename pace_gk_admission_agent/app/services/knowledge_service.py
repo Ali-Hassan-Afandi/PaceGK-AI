@@ -211,7 +211,11 @@ class KnowledgeBase:
             SOURCE_TYPE_ADMISSION if base.name.lower() == "admissiondocs" else SOURCE_TYPE_ACADEMY
         )
         for path in sorted(base.rglob("*")):
-            if not path.is_file():
+            try:
+                if not path.is_file():
+                    continue
+            except (OSError, PermissionError):
+                # Skip unreadable entries (e.g. virtual filesystems) safely.
                 continue
             if any(part.lower() in SKIPPED_DIR_NAMES for part in path.parts):
                 continue
@@ -340,7 +344,12 @@ def _build_default_knowledge_base() -> KnowledgeBase:
             configured = (
                 settings.knowledge_dir if source_type == SOURCE_TYPE_ACADEMY else settings.admission_docs_dir
             )
-            root = _resolve_path(configured)
+            candidate = Path(configured)
+            if candidate.is_dir():
+                root = candidate
+        if root is None or not root.is_dir():
+            logger.warning("Knowledge source folder not found for %s; skipping.", source_type)
+            continue
         base = KnowledgeBase.from_directory(str(root), source_type=source_type)
         kb.chunks.extend(base.chunks)
     logger.info("Default knowledge base ready with %d chunks", len(kb.chunks))
@@ -351,9 +360,13 @@ def get_knowledge_base(root: Optional[str] = None) -> KnowledgeBase:
     """Return the cached knowledge base (built lazily from the raw source folders)."""
     global _knowledge_base
     if _knowledge_base is None:
-        _knowledge_base = (
-            _build_default_knowledge_base() if root is None else KnowledgeBase.from_directory(root)
-        )
+        try:
+            _knowledge_base = (
+                _build_default_knowledge_base() if root is None else KnowledgeBase.from_directory(root)
+            )
+        except Exception:
+            logger.exception("Failed to build the knowledge base; returning an empty one.")
+            _knowledge_base = KnowledgeBase()
     return _knowledge_base
 
 
