@@ -89,16 +89,35 @@ def _resolve_path(root: str) -> Path:
 
 
 def _find_source_root(leaf_name: str) -> Optional[Path]:
-    """Locate a source folder by walking up from the current working directory.
+    """Locate a source folder by checking several candidate locations.
 
-    Tolerates running from a subfolder (e.g. ``pace_gk_admission_agent/`` locally
-    or ``/app`` on Railway) as long as the documented source folder exists somewhere
-    up the tree (e.g. ``DataDocs/``, ``AdmissionDocs/`` at the repository root).
+    Checks, in order:
+      * ``<cwd>/<leaf>``, ``<cwd>/../<leaf>``, ``<cwd>/../../<leaf>``
+      * ``/app/<leaf>``, ``/DataDocs``, ``/app/DataDocs``, ``/repo/<leaf>``
+      * walk-up search from the working directory for ``<ancestor>/<leaf>``
     """
     start = Path.cwd().resolve()
+    candidates: List[Path] = [
+        start / leaf_name,
+        start.parent / leaf_name,
+        start.parent.parent / leaf_name,
+        Path("/app") / leaf_name,
+        Path("/DataDocs"),
+        Path("/app/DataDocs"),
+        Path("/repo") / leaf_name,
+    ]
+    for candidate in candidates:
+        try:
+            if candidate.is_dir():
+                return candidate
+        except (OSError, PermissionError):
+            continue
     for candidate in [start, *start.parents]:
-        if (candidate / leaf_name).is_dir():
-            return candidate / leaf_name
+        try:
+            if (candidate / leaf_name).is_dir():
+                return candidate / leaf_name
+        except (OSError, PermissionError):
+            continue
     return None
 
 
