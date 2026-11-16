@@ -504,3 +504,97 @@ async def test_inquiry_without_relevant_knowledge_returns_safe_fallback(db_sessi
         phone_number="03333333333",
     )
     assert reply == NO_INFORMATION_REPLY
+
+
+# ---------------------------------------------------------------------------
+# Simple memory tests (answer cache + conversation history)
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_repeated_question_reuses_cached_answer(db_session, monkeypatch):
+    """A repeated question from the same student should not hit RAG + LLM again."""
+    import app.agents.admission_agent as agent_module
+    from app.services.knowledge_service import KnowledgeChunk
+    from openai import AsyncOpenAI
+
+    retrieve_calls = {"count": 0}
+
+    async def fake_retrieve(query, top_k=None, source_types=None):
+        retrieve_calls["count"] += 1
+        return [
+            KnowledgeChunk(
+                text="The November 2026 batch admission fee is 15000 rupees.",
+                source="academy_doc/faq.docx",
+                source_type="academy_doc",
+                title="FAQ",
+            )
+        ]
+
+    async def fake_generate(messages):
+        return "The November 2026 batch admission fee is 15000 rupees."
+
+    agent_module.retrieve_knowledge = fake_retrieve  # type: ignore[assignment]
+    agent_module.format_context = lambda chunks: "ctx"  # type: ignore[assignment]
+
+    agent = AdmissionAgent(client=AsyncOpenAI(api_key="test-key"))
+    monkeypatch.setattr(agent, "_generate", fake_generate)
+
+    phone = "03344444444"
+    first = await agent.generate_reply(
+        messages=[{"role": "user", "content": "What is the batch fee?"}],
+        phone_number=phone,
+    )
+    second = await agent.generate_reply(
+        messages=[{"role": "user", "content": "What is the batch fee?"}],
+        phone_number=phone,
+    )
+    assert first == second == "The November 2026 batch admission fee is 15000 rupees."
+    assert retrieve_calls["count"] == 1  # RAG was not queried again for the repeat
+
+
+@pytest.mark.asyncio
+async def test_conversation_memory_carries_previous_turns(db_session, monkeypatch):
+    """LLM conversation messages should include prior user/assistant turns."""
+    import app.agents.admission_agent as agent_module
+    from app.services.knowledge_service import KnowledgeChunk
+    from openai import AsyncOpenAI
+
+    captured: dict = {}
+
+    async def fake_retrieve(query, top_k=None, source_types=None):
+        return [
+            KnowledgeChunk(
+                text="The November 2026 batch admission fee is 15000 rupees.",
+                source="academy_doc/faq.docx",
+                source_type="academy_doc",
+                title="FAQ",
+            )
+        ]
+
+    async def fake_generate(messages):
+        captured.setdefault("messages", []).append(list(messages))
+        return "The November 2026 batch admission fee is 15000 rupees."
+
+    agent_module.retrieve_knowledge = fake_retrieve  # type: ignore[assignment]
+    agent_module.format_context = lambda chunks: "ctx"  # type: ignore[assignment]
+
+    agent = AdmissionAgent(client=AsyncOpenAI(api_key="test-key"))
+    monkeypatch.setattr(agent, "_generate", fake_generate)
+
+    phone = "03344444445"
+    await agent.generate_reply(
+        messages=[{"role": "user", "content": "What is the batch fee?"}],
+        phone_number=phone,
+    )
+    await agent.generate_reply(
+        messages=[{"role": "user", "content": "And what about the timings?"}],
+        phone_number=phone,
+    )
+
+    assert len(captured["messages"]) == 2
+    second_call_messages = captured["messages"][1]
+    roles = [m["role"] for m in second_call_messages]
+    assert "system" in roles
+    assert "user" in roles
+    assert "assistant" in roles
+    # The second call must carry the previous Q&A turn into the LLM context.
+    assert any(m.get("content") == "What is the batch fee?" for m in second_call_messages)

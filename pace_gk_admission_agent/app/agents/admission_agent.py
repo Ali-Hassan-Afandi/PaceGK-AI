@@ -184,6 +184,11 @@ class AdmissionAgent:
             self.client = AsyncOpenAI(api_key=settings.openai_api_key)
         if groq_client is None and settings.groq_api_key:
             self.groq_client = AsyncGroq(api_key=settings.groq_api_key)
+        # Simple in-memory conversation memory and answer cache (per WhatsApp number).
+        self.conversations: Dict[str, List[Dict[str, str]]] = {}
+        self.answer_cache: Dict[Tuple[str, str], str] = {}
+        # Max stored conversation turns (user + assistant messages).
+        self.MAX_CONVERSATION_TURNS = 10
 
     def _provider(self) -> Optional[str]:
         if self.client is not None:
@@ -207,6 +212,31 @@ class AdmissionAgent:
                 "offer human follow-up."
             )
         return system
+
+    def _answer_cache_key(self, phone_number: str, text: str) -> Tuple[str, str]:
+        """Cache key for identical repeated questions from the same student."""
+        normalized = re.sub(r"\s+", " ", (text or "").strip().lower())
+        return (phone_number, normalized)
+
+    def _remember_answer(self, phone_number: str, text: str, reply: str) -> None:
+        self.answer_cache[self._answer_cache_key(phone_number, text)] = reply
+
+    def _record_turn(self, phone_number: str, role: str, content: str) -> None:
+        turns = self.conversations.setdefault(phone_number, [])
+        turns.append({"role": role, "content": content})
+        max_turns = self.MAX_CONVERSATION_TURNS * 2
+        while len(turns) > max_turns:
+            turns.pop(0)
+
+    def _conversation_history(self, phone_number: str) -> List[Dict[str, str]]:
+        """Return the bounded recent conversation turns (user + assistant)."""
+        turns = [
+            t
+            for t in (self.conversations.get(phone_number) or [])
+            if (t.get("content") or "").strip()
+        ]
+        max_turns = self.MAX_CONVERSATION_TURNS * 2
+        return turns[-max_turns:]
 
     def _has_llm(self) -> bool:
         if self.client is not None or self.groq_client is not None:
@@ -528,18 +558,26 @@ class AdmissionAgent:
                         "Welcome to PACE GK Academy! 🎓 Which admission batch are you interested in? "
                         "Please reply with the batch code (e.g., NOV26-1A)."
                     )
+                # Simple memory: skip RAG + LLM for repeated questions from the same student.
+                cache_key = self._answer_cache_key(phone_number, latest_text)
+                if cache_key in self.answer_cache:
+                    return self.answer_cache[cache_key]
+
                 # Grounded generation: retrieve relevant knowledge before answering.
                 retrieved = await retrieve_knowledge(latest_text, top_k=settings.knowledge_top_k)
                 context = format_context(retrieved)
                 if not retrieved:
                     # Nothing found in the knowledge base -> safe, non-hallucinating reply.
-                    return NO_INFORMATION_REPLY
-                reply = await self._generate(
-                    [
-                        {"role": "system", "content": self._grounded_system_prompt(context)},
-                        {"role": "user", "content": latest_text},
-                    ]
-                )
+                    reply = NO_INFORMATION_REPLY
+                else:
+                    self._record_turn(phone_number, "user", latest_text)
+                    history = self._conversation_history(phone_number)
+                    reply = await self._generate(
+                        [{"role": "system", "content": self._grounded_system_prompt(context)}]
+                        + history
+                    )
+                self._record_turn(phone_number, "assistant", reply)
+                self._remember_answer(phone_number, latest_text, reply)
                 return reply
 
             if student.status in ("BATCH_CONFIRMED", "FORM_FILL"):
