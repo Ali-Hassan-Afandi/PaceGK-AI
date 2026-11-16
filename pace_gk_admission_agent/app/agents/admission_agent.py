@@ -498,6 +498,73 @@ class AdmissionAgent:
         return next((b for b in batches if b.batch_code.upper() in upper), None)
 
     # ------------------------------------------------------------------
+    # Intent detection & general Q&A escape hatch (so a student stuck in the
+    # admission flow can still ask other academy questions).
+    # ------------------------------------------------------------------
+
+    # Commands that let a student pause/restart the admission flow at any time.
+    CANCEL_COMMANDS = frozenset(
+        {
+            "cancel",
+            "stop",
+            "exit",
+            "reset",
+            "menu",
+            "main menu",
+            "start over",
+            "restart",
+        }
+    )
+
+    # Keywords that signal a general academy question (not admission form data).
+    GENERAL_QUESTION_KEYWORDS = (
+        "fee", "fees", "timing", "timings", "schedule", "subject",
+        "course", "location", "address", "contact", "phone", "number",
+        "help", "menu", "main menu", "about", "academy", "pace",
+        "hello", "hi", "assalam", "salam", "good morning", "good evening",
+        "what", "where", "when", "who", "how", "can i", "i want to know",
+    )
+
+    def _is_general_question(self, text: str) -> bool:
+        """Heuristic: treat as a general academy question if it contains common
+        inquiry keywords and is not a batch code or structured admission data."""
+        t = (text or "").strip().lower()
+        if not t:
+            return False
+        # A batch code (e.g. NOV26-1A) is admission intent, not a question.
+        if re.fullmatch(r"[A-Z]{2,}\d{2,}[- ]?\d+[A-Z]?", t.upper()):
+            return False
+        # Structured admission data (labelled fields / CNIC pattern) is not a
+        # general question even if it happens to contain a keyword.
+        if re.search(r"\b(father\s*(['\s]?s?)?\s*name|domicile|id card)\b", t):
+            return False
+        if re.search(r"\d{5}-\d{7}-\d{1}|\b\d{13}\b", t):
+            return False
+        return any(k in t for k in self.GENERAL_QUESTION_KEYWORDS)
+
+    async def _answer_general_question(
+        self,
+        text: str,
+        phone_number: str,
+        messages: List[Dict[str, Any]],
+    ) -> str:
+        """Answer a general academy question from the knowledge base without
+        disturbing the admission state machine."""
+        retrieved = await retrieve_knowledge(text, top_k=settings.knowledge_top_k)
+        context = format_context(retrieved)
+        if not retrieved:
+            return NO_INFORMATION_REPLY
+        self._record_turn(phone_number, "user", text)
+        history = self._conversation_history(phone_number)
+        reply = await self._generate(
+            [{"role": "system", "content": self._grounded_system_prompt(context)}]
+            + history
+        )
+        self._record_turn(phone_number, "assistant", reply)
+        self._remember_answer(phone_number, text, reply)
+        return reply
+
+    # ------------------------------------------------------------------
     # Main entry point
     # ------------------------------------------------------------------
     async def generate_reply(
@@ -523,6 +590,33 @@ class AdmissionAgent:
                 student.status = "INQUIRY"
                 student.batch_id = None
                 db.commit()
+
+            # ------------------------------------------------------------------
+            # TEXT messages: cancel / general Q&A escape hatch (any text state)
+            # ------------------------------------------------------------------
+            if media_type != "image" and not media_id:
+                lower = latest_text.strip().lower()
+                if lower in self.CANCEL_COMMANDS:
+                    student.status = "INQUIRY"
+                    student.batch_id = None
+                    db.commit()
+                    return (
+                        "Admission flow paused. Ask me any academy question, or "
+                        "reply with a batch code (e.g., NOV26-1A) to start again."
+                    )
+
+                # General academy question -> answer from the knowledge base
+                # without disturbing the admission state machine. Only the two
+                # "stuck" states need this escape hatch; INQUIRY already handles
+                # general questions, and FEE_PENDING / FEE_SUBMITTED keep their
+                # receipt-reminder behaviour.
+                if (
+                    student.status in ("BATCH_CONFIRMED", "FORM_FILL")
+                    and self._is_general_question(latest_text)
+                ):
+                    return await self._answer_general_question(
+                        latest_text, phone_number, messages
+                    )
 
             # ------------------------------------------------------------------
             # IMAGE messages
@@ -581,10 +675,20 @@ class AdmissionAgent:
                 return reply
 
             if student.status in ("BATCH_CONFIRMED", "FORM_FILL"):
-                # BATCH_CONFIRMED -> FORM_FILL; then collect this message's details.
-                if student.status == "BATCH_CONFIRMED":
-                    student.status = "FORM_FILL"
                 extracted = await self._extract_details(latest_text, messages)
+                if student.status == "BATCH_CONFIRMED":
+                    # Only advance to form fill when the message actually contains
+                    # admission data. Non-admission text is already handled by the
+                    # general-question escape hatch above; anything else just asks
+                    # for the details without advancing the state.
+                    if not extracted:
+                        return (
+                            "Please share your admission details: full name, "
+                            "father's name, domicile, CNIC (ID card number). "
+                            "You can send these across one or more messages, or "
+                            "ask a general question about the academy."
+                        )
+                    student.status = "FORM_FILL"
                 self._apply_extracted(student, extracted)
                 db.commit()
 
