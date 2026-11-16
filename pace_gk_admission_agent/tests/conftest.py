@@ -70,12 +70,35 @@ def client():
 
 @pytest.fixture(autouse=True)
 def _clear_processed_message_ids():
-    """Clear the in-process WhatsApp de-duplication set around every test."""
-    import app.routers.whatsapp as whatsapp_router
+    """Clear the durable webhook idempotency table around every test.
 
-    whatsapp_router._processed_message_ids.clear()
+    The database is reset per test by ``db_session`` (create/drop all), but we
+    also clear the idempotency table explicitly so tests that do not use
+    ``db_session`` start from a clean de-duplication state.
+    """
+    from sqlalchemy.exc import OperationalError
+
+    from app.database import Base, engine, SessionLocal
+    from app.models.webhook import ProcessedWebhookMessage
+
+    # Ensure the idempotency table exists (it is created/dropped per test by
+    # db_session, but this fixture is autouse and runs for every test).
+    Base.metadata.create_all(bind=engine)
+
+    def _clear():
+        db = SessionLocal()
+        try:
+            db.query(ProcessedWebhookMessage).delete()
+            db.commit()
+        except OperationalError:
+            # Table may have been dropped by db_session teardown; ignore.
+            db.rollback()
+        finally:
+            db.close()
+
+    _clear()
     yield
-    whatsapp_router._processed_message_ids.clear()
+    _clear()
 
 
 @pytest.fixture

@@ -1,46 +1,94 @@
 """End-to-end admission flow test.
 
-Covers the complete human-in-the-loop admission funnel:
+Covers the corrected human-in-the-loop admission funnel:
 
     visitor asks for a batch
-        -> batch confirmed (BATCH_CONFIRMED)
+        -> BATCH_CONFIRMED
     student submits admission details
-        -> fee submission queued (FEE_SUBMITTED)
-    admin approves the student
-        -> fee categorized + marked paid + CONFIRMED
-        -> confirmation sent via WhatsApp
-        -> admission batch data sheet exported
+        -> FORM_FILL (not FEE_SUBMITTED; photograph still missing)
+    student uploads photograph
+        -> FEE_PENDING (all 5 details + photo stored)
+    student uploads fee receipt
+        -> FEE_SUBMITTED (receipt persistently stored)
+    admin approves
+        -> APPROVED (receipt + details verified by the admin)
+    WhatsApp notifications accepted
+        -> CONFIRMED
+    admission batch data sheet exported
 """
+
+import os
 
 from app.models.student import Student
 
 
+def _meta_image_post(client, phone, sid, media_id="media-id-1"):
+    return client.post(
+        "/whatsapp/webhook",
+        json={
+            "entry": [
+                {
+                    "changes": [
+                        {
+                            "value": {
+                                "messages": [
+                                    {
+                                        "id": sid,
+                                        "from": phone,
+                                        "type": "image",
+                                        "image": {
+                                            "id": media_id,
+                                            "mime_type": "image/jpeg",
+                                        },
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ]
+        },
+        headers={"content-type": "application/json"},
+    )
+
+
+def _fake_image_layer(monkeypatch):
+    """Fake Meta media download + permanent storage for the agent."""
+    import app.agents.admission_agent as agent_module
+
+    uploads = []
+
+    class FakeStorage:
+        async def upload_image(self, file_bytes, content_type, folder):
+            uploads.append(folder)
+            return f"https://storage.example.com/{folder}/{len(uploads)}.jpg"
+
+        async def delete_image(self, reference):
+            return True
+
+        def get_public_url(self, reference):
+            return reference
+
+    async def _fake_download_url(media_id):
+        return "https://download.example.com/media"
+
+    async def _fake_download(url):
+        return b"\xff\xd8\xff" + b"\x00" * 100
+
+    monkeypatch.setattr(agent_module, "get_storage_provider", lambda: FakeStorage())
+    monkeypatch.setattr(agent_module, "get_media_download_url", _fake_download_url)
+    monkeypatch.setattr(agent_module, "download_media", _fake_download)
+    return uploads
+
+
 def test_full_admission_flow(client, db_session, seed_batch, whatsapp_sender, admin_numbers, monkeypatch):
-    """Complete human-in-the-loop admission funnel over the WhatsApp webhook."""
-    import app.routers.whatsapp as whatsapp_router
-
-    # No LLM key is configured in tests, so the agent's deterministic path would
-    # skip detail extraction. Patch the agent so the webhook path captures the
-    # submitted admission details end-to-end (restored automatically after test).
-    async def fake_extract_details(messages):
-        return {
-            "name": "Ali Khan",
-            "father_name": "Rehman",
-            "domicile": "Lahore",
-            "id_card_number": "12345",
-            "student_pic_url": "",
-            "fee_paid_pic_url": "",
-            "fee_amount": "",
-            "fee_category": "",
-        }
-
-    monkeypatch.setattr(whatsapp_router.agent, "_has_llm", lambda: True)
-    monkeypatch.setattr(whatsapp_router.agent, "_extract_details", fake_extract_details)
+    """Complete corrected admission funnel over the WhatsApp webhook."""
+    uploads = _fake_image_layer(monkeypatch)
 
     student_phone = "03333333333"
     admin_phone = "03367483185"
 
-    # --- Step 1: student asks about admission with a batch code -------------
+    # --- Step 1: student asks for a batch -> BATCH_CONFIRMED ---------------
     r = client.post(
         "/whatsapp/webhook",
         data={
@@ -61,11 +109,11 @@ def test_full_admission_flow(client, db_session, seed_batch, whatsapp_sender, ad
     assert student.status == "BATCH_CONFIRMED"
     assert student.batch_id is not None
 
-    # --- Step 2: student submits admission details --------------------------
+    # --- Step 2: student submits admission details -> FORM_FILL ------------
     r = client.post(
         "/whatsapp/webhook",
         data={
-            "Body": "Ali Khan, father name Rehman, domicile Lahore, ID card 12345, WhatsApp 03333333333",
+            "Body": "Ali Khan, father name Rehman, domicile Lahore, ID card 12345-1234567-1, WhatsApp 03333333333",
             "From": f"whatsapp:{student_phone}",
             "To": "whatsapp:+14155238886",
             "MessageSid": "e2e-002",
@@ -79,17 +127,49 @@ def test_full_admission_flow(client, db_session, seed_batch, whatsapp_sender, ad
         .filter(Student.phone_number == student_phone)
         .first()
     )
-    assert student.status == "FEE_SUBMITTED"
+    assert student.status == "FORM_FILL"
     assert student.name == "Ali Khan"
+    assert student.id_card_number == "1234512345671"
+    # Photograph still missing -> not FEE_PENDING / not FEE_SUBMITTED.
+    assert student.student_pic_url is None
 
-    # --- Step 3: admin approves the student (human-in-the-loop) -------------
+    # --- Step 3: student uploads photograph -> FEE_PENDING -----------------
+    r = _meta_image_post(client, student_phone, "e2e-003")
+    assert r.status_code == 200
+
+    db_session.expire_all()
+    student = (
+        db_session.query(Student)
+        .filter(Student.phone_number == student_phone)
+        .first()
+    )
+    assert student.status == "FEE_PENDING"
+    assert student.student_pic_url is not None
+
+    # --- Step 4: student uploads fee receipt -> FEE_SUBMITTED --------------
+    r = _meta_image_post(client, student_phone, "e2e-004")
+    assert r.status_code == 200
+
+    db_session.expire_all()
+    student = (
+        db_session.query(Student)
+        .filter(Student.phone_number == student_phone)
+        .first()
+    )
+    assert student.status == "FEE_SUBMITTED"
+    assert student.fee_paid_pic_url is not None
+    # Photograph and receipt are stored separately (different folders).
+    assert any(f == "student_photos" for f in uploads)
+    assert any(f == "fee_receipts" for f in uploads)
+
+    # --- Step 5: admin approves (human-verified payment) -> APPROVED -------
     r = client.post(
         "/whatsapp/webhook",
         data={
             "Body": f"APPROVE {student_phone} NEW",
             "From": f"whatsapp:{admin_phone}",
             "To": "whatsapp:+14155238886",
-            "MessageSid": "e2e-003",
+            "MessageSid": "e2e-005",
         },
     )
     assert r.status_code == 200
@@ -100,25 +180,37 @@ def test_full_admission_flow(client, db_session, seed_batch, whatsapp_sender, ad
         .filter(Student.phone_number == student_phone)
         .first()
     )
-    assert student.status == "CONFIRMED"
+    # APPROVED first; CONFIRMED only after notifications are accepted. The mocked
+    # sender always accepts, so with accepted notifications the student moves on
+    # to CONFIRMED (the retry/notification-failure path is covered elsewhere).
+    assert student.status in ("APPROVED", "CONFIRMED")
     assert student.fee_category == "NEW"
     assert student.fee_amount == 15000.0
     assert student.fee_paid == "Yes"
     assert student.approved_by == admin_phone
     assert student.approved_at is not None
 
-    # --- Step 4: confirmation sent to the student ---------------------------
+    # The mocked WhatsApp sender accepted the messages, so confirmation
+    # notification was accepted -> CONFIRMED.
+    db_session.expire_all()
+    student = (
+        db_session.query(Student)
+        .filter(Student.phone_number == student_phone)
+        .first()
+    )
+    assert student.status == "CONFIRMED"
+    assert student.confirmation_sent_at is not None
+
+    # --- Step 6: confirmation sent to the student --------------------------
     student_messages = [
         m for m in whatsapp_sender if student_phone in m["to"]
     ]
-    assert len(student_messages) >= 1, "expected at least one WhatsApp message to the student"
+    assert len(student_messages) >= 1
     bodies = " ".join(m["body"] for m in student_messages)
     assert "Congratulations" in bodies
 
-    # --- Step 5: admission batch data sheet exported ------------------------
+    # --- Step 7: admission batch data sheet exported -----------------------
     from pathlib import Path
-
-    import os
 
     export_dir = Path(os.environ["ADMISSION_EXPORT_DIR"])
     batch_sheet = export_dir / "NOV26-1A_students.csv"
@@ -131,32 +223,39 @@ def test_full_admission_flow(client, db_session, seed_batch, whatsapp_sender, ad
 
 
 def test_payment_for_one_batch_cannot_unlock_another_batch(
-    client, db_session, seed_batch, whatsapp_sender, admin_numbers
+    client, db_session, seed_batch, whatsapp_sender, admin_numbers, monkeypatch
 ):
-    """Cross-session isolation: approving a student in batch 1A must not
-    confirm or grant batch 1B access to a different student."""
+    """Cross-session isolation: a student's payment/approval must not confirm
+    or grant batch access to a different student."""
+    _fake_image_layer(monkeypatch)
+
     student_a = "03333333333"
     student_b = "03344444444"
 
-    for phone, code in [(student_a, "NOV26-1A"), (student_b, "NOV26-1B")]:
+    def bring_to_fee_submitted(phone, code):
         client.post(
             "/whatsapp/webhook",
             data={
                 "Body": code,
                 "From": f"whatsapp:{phone}",
                 "To": "whatsapp:+14155238886",
-                "MessageSid": f"iso-{phone}",
+                "MessageSid": f"fs-{phone}",
             },
         )
         client.post(
             "/whatsapp/webhook",
             data={
-                "Body": "some admission details",
+                "Body": "Ali Khan, father name Rehman, domicile Lahore, ID card 12345-1234567-1",
                 "From": f"whatsapp:{phone}",
                 "To": "whatsapp:+14155238886",
-                "MessageSid": f"iso-details-{phone}",
+                "MessageSid": f"fs-details-{phone}",
             },
         )
+        _meta_image_post(client, phone, f"fs-photo-{phone}")  # photograph -> FEE_PENDING
+        _meta_image_post(client, phone, f"fs-receipt-{phone}")  # receipt -> FEE_SUBMITTED
+
+    bring_to_fee_submitted(student_a, "NOV26-1A")
+    bring_to_fee_submitted(student_b, "NOV26-1B")
 
     # Approve only student A.
     client.post(
@@ -181,5 +280,39 @@ def test_payment_for_one_batch_cannot_unlock_another_batch(
         .first()
     )
     assert a.status == "CONFIRMED"
-    assert b.status == "FEE_SUBMITTED"  # B must remain awaiting review
+    assert b.status == "FEE_SUBMITTED"  # B remains awaiting review
     assert a.batch_id != b.batch_id
+
+
+def test_student_cannot_reach_fee_submitted_by_text_alone(
+    client, db_session, seed_batch
+):
+    """Regression: text details without a photograph must never reach FEE_SUBMITTED."""
+    client.post(
+        "/whatsapp/webhook",
+        data={
+            "Body": "NOV26-1A",
+            "From": "whatsapp:03333333333",
+            "To": "whatsapp:+14155238886",
+            "MessageSid": "text-001",
+        },
+    )
+    client.post(
+        "/whatsapp/webhook",
+        data={
+            "Body": "Ali Khan, father name Rehman, domicile Lahore, ID card 12345-1234567-1",
+            "From": "whatsapp:03333333333",
+            "To": "whatsapp:+14155238886",
+            "MessageSid": "text-002",
+        },
+    )
+
+    db_session.expire_all()
+    student = (
+        db_session.query(Student)
+        .filter(Student.phone_number == "03333333333")
+        .first()
+    )
+    assert student.status == "FORM_FILL"
+    assert student.student_pic_url is None
+    assert student.fee_paid_pic_url is None

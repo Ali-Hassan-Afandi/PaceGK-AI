@@ -4,7 +4,7 @@ from typing import Any, Dict, Optional
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-from .database import Base, engine, SessionLocal
+from .database import Base, engine, SessionLocal, ensure_schema
 from .models import Batch, Student  # noqa: F401
 from .routers.whatsapp import agent, router as whatsapp_router
 from .services.batch_service import create_batch, get_batches
@@ -30,6 +30,8 @@ DEMO_BATCHES = [
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
+    # Repeatable, data-safe schema updates (idempotency table, notification columns).
+    ensure_schema()
     db = SessionLocal()
     try:
         if not get_batches(db):
@@ -64,11 +66,18 @@ async def admission_chat(payload: AdmissionChatRequest) -> Dict[str, Any]:
 
     The admission agent owns the remaining student process:
     batch selection -> admission form -> fee submission -> human approval -> community link.
+
+    Any image reference is processed through the persistent storage layer: it is
+    downloaded, validated and stored permanently, and only the permanent storage
+    reference is associated with the student. Temporary URLs are never stored as
+    permanent image references.
     """
+    media_type = "image" if payload.media_url else None
     reply = await agent.generate_reply(
         messages=[{"role": "user", "content": payload.message}],
         phone_number=payload.phone_number,
         media_url=payload.media_url,
+        media_type=media_type,
     )
     return {"reply": reply}
 

@@ -144,6 +144,78 @@ async def send_whatsapp_text(to_number: str, body: str) -> dict:
         return data
 
 
+async def get_media_metadata(media_id: str) -> dict:
+    """Retrieve media metadata from the Meta Graph API.
+
+    Returns the metadata object (includes the temporary ``url`` download link,
+    mime type, file size and sha256). Never logs the access token.
+    Raises httpx.HTTPStatusError on non-2xx responses.
+    """
+    access_token = settings.whatsapp_access_token
+    if not access_token:
+        raise RuntimeError("WHATSAPP_ACCESS_TOKEN is not configured.")
+    url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{media_id}"
+    headers = {"Authorization": f"Bearer {access_token}"}
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(url, headers=headers)
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError:
+            meta_error = _extract_meta_error(response)
+            logger.error(
+                "Meta media metadata fetch failed. status=%s media_id=%s "
+                "meta_error_code=%s meta_error_message=%s",
+                response.status_code,
+                media_id,
+                meta_error.get("code"),
+                meta_error.get("message"),
+            )
+            raise
+    data = response.json()
+    return data if isinstance(data, dict) else {}
+
+
+async def get_media_download_url(media_id: str) -> str:
+    """Return the temporary download URL for a Meta media ID.
+
+    The returned URL is short-lived and must NOT be stored as a permanent
+    image reference. It is used once to download the image before permanent
+    storage.
+    """
+    metadata = await get_media_metadata(media_id)
+    download_url = metadata.get("url")
+    if not download_url:
+        raise RuntimeError(f"No download URL in media metadata for media_id={media_id}")
+    return download_url
+
+
+async def download_media(download_url: str) -> bytes:
+    """Download media bytes from a temporary Meta download URL.
+
+    Authenticates with the WhatsApp access token (Bearer). Validates nothing
+    about content here; callers validate MIME type/size after download.
+    Never logs the access token.
+    """
+    access_token = settings.whatsapp_access_token
+    if not access_token:
+        raise RuntimeError("WHATSAPP_ACCESS_TOKEN is not configured.")
+    headers = {"Authorization": f"Bearer {access_token}"}
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.get(download_url, headers=headers)
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError:
+            meta_error = _extract_meta_error(response)
+            logger.error(
+                "Meta media download failed. status=%s meta_error_code=%s meta_error_message=%s",
+                response.status_code,
+                meta_error.get("code"),
+                meta_error.get("message"),
+            )
+            raise
+    return response.content
+
+
 def _safe_log_response(data: dict) -> dict:
     """Return a safe subset of the API response for logging (no secrets, no personal info).
 

@@ -25,6 +25,10 @@ class Student(Base):
     approved_by = Column(String, nullable=True)
     approved_at = Column(DateTime, nullable=True)
     rejection_reason = Column(String, nullable=True)
+    # Notification tracking: records whether the WhatsApp API accepted each
+    # outbound notification. CONFIRMED is only set once these are accepted.
+    confirmation_sent_at = Column(DateTime, nullable=True)
+    community_link_sent_at = Column(DateTime, nullable=True)
     batch = relationship("Batch", back_populates="students")
 
     def __repr__(self) -> str:

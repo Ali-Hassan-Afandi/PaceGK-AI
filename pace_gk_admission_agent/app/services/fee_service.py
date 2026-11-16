@@ -6,6 +6,8 @@ from ..models.student import Student
 DEFAULT_FULL_FEE = 15000.0
 DISCOUNT_RATE = 0.8  # 20% less
 
+ALLOWED_FEE_CATEGORIES = frozenset({"NEW", "OLD", "ORPHAN", "DISABLED", "NEEDY"})
+
 
 def apply_fee(db: Session, student: Student, category: str) -> float:
     full_fee = 0.0

@@ -1,0 +1,23 @@
+# Environment / secrets
+.env
+.env.*
+
+# Local SQLite databases (never commit admissions data)
+*.db
+*.sqlite
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Test / tooling caches
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Runtime storage & generated exports
+admission_storage/
+admission_data/
