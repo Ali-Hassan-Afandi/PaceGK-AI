@@ -19,9 +19,11 @@ Supported input formats:
 Retrieval strategy:
 
 * Keyword (lexical) scoring over token overlap + full-phrase containment.
-* Semantic (embedding) similarity when an embedding API key/model is configured
-  (OpenAI or Groq, OpenAI-compatible endpoint). The top candidates are re-ranked
-  with cosine similarity when embeddings are available.
+* Semantic (embedding) similarity when embedding is explicitly enabled and an
+  OpenAI-compatible key/model is configured. Groq is used for chat completions
+  only — it does not offer an embeddings API, so the Groq key is never used for
+  embeddings. The top candidates are re-ranked with cosine similarity when
+  embeddings are available; otherwise retrieval is keyword-only.
 
 The agent must answer ONLY from retrieved chunks (grounded generation). This
 service never invents content; when nothing relevant is retrieved the caller is
@@ -277,23 +279,19 @@ class KnowledgeBase:
         if self._embed_client is None:
             from openai import AsyncOpenAI
 
-            api_key = (
-                settings.knowledge_embedding_api_key
-                or settings.openai_api_key
-                or settings.groq_api_key
-            )
-            base_url = settings.knowledge_embedding_base_url or (
-                "https://api.groq.com/openai/v1" if settings.groq_api_key else "https://api.openai.com/v1"
-            )
+            # Embeddings are OpenAI-only: never fall back to the Groq key — Groq
+            # does not provide an embeddings endpoint.
+            api_key = settings.knowledge_embedding_api_key or settings.openai_api_key
+            base_url = settings.knowledge_embedding_base_url or "https://api.openai.com/v1"
             self._embed_client = AsyncOpenAI(api_key=api_key, base_url=base_url)
         return self._embed_client
 
     async def _embed(self, text: str) -> Optional[List[float]]:
-        api_key = (
-            settings.knowledge_embedding_api_key
-            or settings.openai_api_key
-            or settings.groq_api_key
-        )
+        # Embeddings are opt-in and OpenAI-only. Without an explicit opt-in and a
+        # key, retrieval stays keyword-only and no embedding API call is made.
+        if not settings.knowledge_embedding_enabled:
+            return None
+        api_key = settings.knowledge_embedding_api_key or settings.openai_api_key
         if not api_key:
             return None
         try:
@@ -410,6 +408,16 @@ async def retrieve_knowledge(
 ) -> List[KnowledgeChunk]:
     """Retrieve the most relevant knowledge chunks for a query."""
     return await get_knowledge_base().retrieve(query, top_k=top_k, source_types=source_types)
+
+
+async def retrieve_from_datadocs(
+    query: str,
+    top_k: Optional[int] = None,
+) -> List[KnowledgeChunk]:
+    """Retrieve knowledge chunks from DataDocs only (general academy info)."""
+    return await get_knowledge_base().retrieve(
+        query, top_k=top_k, source_types=[SOURCE_TYPE_ACADEMY]
+    )
 
 
 def format_context(chunks: List[KnowledgeChunk]) -> str:

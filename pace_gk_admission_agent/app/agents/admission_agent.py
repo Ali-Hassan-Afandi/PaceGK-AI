@@ -28,6 +28,7 @@ import json
 import logging
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from groq import AsyncGroq
@@ -49,6 +50,12 @@ from ..services.admission_validation import (
     validate_student_photograph,
     TEXT_VALIDATORS,
 )
+from ..services.knowledge_embedding_service import KnowledgeEmbeddingService
+from ..services.knowledge_service import (
+    SOURCE_TYPE_ACADEMY,
+    format_context,
+    retrieve_knowledge,
+)
 from ..services.storage_service import (
     FOLDER_FEE_RECEIPTS,
     FOLDER_STUDENT_PHOTOS,
@@ -56,7 +63,6 @@ from ..services.storage_service import (
 )
 from ..services.admission_service import get_or_create_student
 from ..services.batch_service import get_batches
-from ..services.knowledge_service import format_context, retrieve_knowledge
 from ..utils.whatsapp import download_media, get_media_download_url, get_media_metadata
 
 logger = logging.getLogger(__name__)
@@ -542,17 +548,88 @@ class AdmissionAgent:
             return False
         return any(k in t for k in self.GENERAL_QUESTION_KEYWORDS)
 
+    # ------------------------------------------------------------------
+    # Admission intent detection
+    # ------------------------------------------------------------------
+
+    ADMISSION_INTENT_KEYWORDS = (
+        "admission", "admissions", "admit", "admitted",
+        "register", "registration", "registered", "registering",
+        "enroll", "enrollment", "enrolled", "enrolling",
+        "apply", "application", "applied", "applying",
+        "join", "joining", "joined",
+        "admission form", "registration form", "enrollment form",
+        "fee submission", "fee submit", "fee payment",
+        "cnic", "id card", "identity card",
+        "domicile", "father name", "father's name",
+        "student photo", "student photograph", "student picture",
+        "batch code", "batch selection", "choose batch",
+    )
+
+    def _is_admission_intent(self, text: str) -> bool:
+        """True when the message signals admission / registration / enrollment intent.
+
+        These messages should route to the admission state machine rather than
+        being answered as general academy questions from DataDocs.
+        """
+        t = (text or "").strip().lower()
+        if not t:
+            return False
+        # A batch code (e.g. NOV26-1A) is always admission intent.
+        if re.fullmatch(r"[A-Z]{2,}\d{2,}[- ]?\d+[A-Z]?", t.upper()):
+            return True
+        # CNIC or structured admission fields are admission intent.
+        if re.search(r"\b(father\s*(['\s]?s?)?\s*name|domicile|id card)\b", t):
+            return True
+        if re.search(r"\d{5}-\d{7}-\d{1}|\b\d{13}\b", t):
+            return True
+        return any(k in t for k in self.ADMISSION_INTENT_KEYWORDS)
+
     async def _answer_general_question(
         self,
         text: str,
         phone_number: str,
         messages: List[Dict[str, Any]],
     ) -> str:
-        """Answer a general academy question from the knowledge base without
-        disturbing the admission state machine."""
-        retrieved = await retrieve_knowledge(text, top_k=settings.knowledge_top_k)
-        context = format_context(retrieved)
-        if not retrieved:
+        """Answer a general academy question from DataDocs only (general academy info).
+
+        Tries persistent embedding-based retrieval first (one-time embedded corpus,
+        incrementally updated), falling back to keyword-based retrieval from DataDocs.
+        AdmissionDocs is never used for general questions.
+        """
+        retrieved_chunks: List[KnowledgeChunk] = []
+        context = ""
+
+        # 1) Try embedding-based retrieval from stored DataDocs embeddings.
+        if settings.knowledge_embedding_enabled:
+            try:
+                async with KnowledgeEmbeddingService() as svc:
+                    embedding_results = await svc.retrieve_from_embeddings(
+                        text, source_folder="DataDocs", top_k=settings.knowledge_top_k
+                    )
+                for chunk_text, source_file, _folder, _score in embedding_results:
+                    retrieved_chunks.append(
+                        KnowledgeChunk(
+                            text=chunk_text,
+                            source=f"DataDocs/{source_file}",
+                            source_type=SOURCE_TYPE_ACADEMY,
+                            title=Path(source_file).stem,
+                        )
+                    )
+            except Exception:
+                logger.exception("Embedding-based general-question retrieval failed.")
+
+        # 2) Fallback: keyword-based retrieval from DataDocs only.
+        if not retrieved_chunks:
+            retrieved = await retrieve_knowledge(
+                text, top_k=settings.knowledge_top_k, source_types=[SOURCE_TYPE_ACADEMY]
+            )
+            context = format_context(retrieved)
+            retrieved_chunks = list(retrieved)
+        else:
+            context = format_context(retrieved_chunks)
+
+        if not retrieved_chunks:
             return NO_INFORMATION_REPLY
         self._record_turn(phone_number, "user", text)
         history = self._conversation_history(phone_number)
@@ -647,32 +724,22 @@ class AdmissionAgent:
                     )
                     return BATCH_CONFIRMED_REPLY.format(batch_label=batch_label)
 
-                if not self._has_llm():
+                # Admission intent but no batch code matched yet -> ask for batch code.
+                if self._is_admission_intent(latest_text):
                     return (
-                        "Welcome to PACE GK Academy! 🎓 Which admission batch are you interested in? "
-                        "Please reply with the batch code (e.g., NOV26-1A)."
+                        "Which admission batch are you interested in? "
+                        "Please share the batch code (e.g., NOV26-1A)."
                     )
+
+                # General academy question -> answer from DataDocs only.
                 # Simple memory: skip RAG + LLM for repeated questions from the same student.
                 cache_key = self._answer_cache_key(phone_number, latest_text)
                 if cache_key in self.answer_cache:
                     return self.answer_cache[cache_key]
 
-                # Grounded generation: retrieve relevant knowledge before answering.
-                retrieved = await retrieve_knowledge(latest_text, top_k=settings.knowledge_top_k)
-                context = format_context(retrieved)
-                if not retrieved:
-                    # Nothing found in the knowledge base -> safe, non-hallucinating reply.
-                    reply = NO_INFORMATION_REPLY
-                else:
-                    self._record_turn(phone_number, "user", latest_text)
-                    history = self._conversation_history(phone_number)
-                    reply = await self._generate(
-                        [{"role": "system", "content": self._grounded_system_prompt(context)}]
-                        + history
-                    )
-                self._record_turn(phone_number, "assistant", reply)
-                self._remember_answer(phone_number, latest_text, reply)
-                return reply
+                return await self._answer_general_question(
+                    latest_text, phone_number, messages
+                )
 
             if student.status in ("BATCH_CONFIRMED", "FORM_FILL"):
                 extracted = await self._extract_details(latest_text, messages)

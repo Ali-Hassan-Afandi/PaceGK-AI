@@ -37,14 +37,19 @@ class Settings(BaseSettings):
     supabase_storage_bucket: str = ""
 
     # --- Knowledge base / RAG ------------------------------------------------
-    # Raw source folders the knowledge base is built from. The app lives in the
-    # `pace_gk_admission_agent/` subfolder while the docs sit at the repo root,
-    # so the defaults point one level up from the app directory.
-    knowledge_dir: str = "../DataDocs"
-    admission_docs_dir: str = "../AdmissionDocs"
+    # Raw source folders the knowledge base is built from. Defaults point to the
+    # folders inside `pace_gk_admission_agent/` (DataDocs = general academy info,
+    # AdmissionDocs = admission / fee submission details).
+    knowledge_dir: str = "DataDocs"
+    admission_docs_dir: str = "AdmissionDocs"
     # How many chunks to retrieve per question.
     knowledge_top_k: int = 3
-    # Embedding settings (OpenAI-compatible: OpenAI or Groq).
+    # Embedding settings. NOTE: Groq does NOT offer an embeddings API, so
+    # embeddings are OpenAI-only and opt-in. When disabled (or no OpenAI key is
+    # provided) retrieval is keyword-only and no embedding API calls are made.
+    # Embeddings are computed once on startup and persisted; only new/changed
+    # chunks are (re)embedded on subsequent runs.
+    knowledge_embedding_enabled: bool = False
     knowledge_embedding_model: str = "text-embedding-3-small"
     knowledge_embedding_api_key: str = ""
     knowledge_embedding_base_url: str = "https://api.openai.com/v1"

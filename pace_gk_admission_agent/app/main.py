@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 
@@ -8,6 +9,9 @@ from .database import Base, engine, SessionLocal, ensure_schema
 from .models import Batch, Student  # noqa: F401
 from .routers.whatsapp import agent, router as whatsapp_router
 from .services.batch_service import create_batch, get_batches
+from .services.knowledge_embedding_service import KnowledgeEmbeddingService
+
+logger = logging.getLogger(__name__)
 
 
 class AdmissionChatRequest(BaseModel):
@@ -45,6 +49,16 @@ async def lifespan(app: FastAPI):
                 )
     finally:
         db.close()
+
+    # One-time (incremental) embedding of both knowledge folders on startup.
+    # Only new/changed chunks are embedded; already-embedded chunks are skipped.
+    try:
+        async with KnowledgeEmbeddingService() as svc:
+            results = await svc.initialize_embeddings()
+        logger.info("Startup embedding initialized: %s", results)
+    except Exception:
+        logger.exception("Startup embedding initialization failed; embeddings will be lazy.")
+
     yield
     engine.dispose()
 

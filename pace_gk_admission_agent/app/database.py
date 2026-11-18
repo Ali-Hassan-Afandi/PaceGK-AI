@@ -47,7 +47,7 @@ def ensure_schema(db=None) -> None:
     try:
         # Import models lazily so their tables are registered with Base.metadata
         # before create_all (avoids a circular import: models import this module).
-        from .models import batch, student, webhook  # noqa: F401
+        from .models import batch, knowledge_embedding, student, webhook  # noqa: F401
 
         # Create missing tables (no-op for existing tables).
         Base.metadata.create_all(bind=engine)
