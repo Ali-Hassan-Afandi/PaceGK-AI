@@ -303,13 +303,17 @@ async def _handle_admin_command(text: str, sender_phone: str) -> Optional[str]:
                     db.commit()
 
             # Confirmation message (idempotent: only sent once).
+            # Concise, token-efficient: includes all key student details.
             if not student.confirmation_sent_at:
-                roll = f"Your roll number: {student.roll_number}. " if student.roll_number else ""
+                roll = f"Roll: {student.roll_number} | " if student.roll_number else ""
+                fee = f"Fee: {float(student.fee_amount) if student.fee_amount is not None else 0.0} PKR | " if student.fee_amount is not None else ""
                 confirmation = (
-                    f"Congratulations! Your application for "
-                    f"{batch.name if batch else 'the batch'} "
-                    f"(category {category}) has been approved. "
-                    f"{roll}"
+                    "Congratulations! Your admission is approved.\n"
+                    f"Name: {student.name or '-'}\n"
+                    f"Father: {student.father_name or '-'}\n"
+                    f"CNIC: {student.id_card_number or '-'}\n"
+                    f"{roll}{fee}"
+                    f"Batch: {batch.name if batch else '-'}\n"
                     "Please join the community via the link we sent."
                 )
                 if await _send_to_student(student.phone_number, confirmation):
