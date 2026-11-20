@@ -280,8 +280,11 @@ class KnowledgeBase:
             from openai import AsyncOpenAI
 
             # Embeddings are OpenAI-only: never fall back to the Groq key — Groq
-            # does not provide an embeddings endpoint.
+            # does not provide an embeddings endpoint. A Groq key (gsk_...) used
+            # here would fail with a 401 AuthenticationError, so ignore it.
             api_key = settings.knowledge_embedding_api_key or settings.openai_api_key
+            if api_key and str(api_key).startswith("gsk_"):
+                api_key = None
             base_url = settings.knowledge_embedding_base_url or "https://api.openai.com/v1"
             self._embed_client = AsyncOpenAI(api_key=api_key, base_url=base_url)
         return self._embed_client
@@ -292,6 +295,9 @@ class KnowledgeBase:
         if not settings.knowledge_embedding_enabled:
             return None
         api_key = settings.knowledge_embedding_api_key or settings.openai_api_key
+        # Groq does not offer an embeddings API; never send a Groq key to OpenAI.
+        if api_key and str(api_key).startswith("gsk_"):
+            api_key = None
         if not api_key:
             return None
         try:

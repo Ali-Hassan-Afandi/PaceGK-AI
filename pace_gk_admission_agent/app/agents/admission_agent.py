@@ -126,9 +126,12 @@ FORM_FILL_REPLY = (
 )
 
 FEE_PENDING_REPLY = (
-    "Thank you, your admission details are complete. "
-    "Please submit the fee payment and send a clear photo/screenshot of the fee "
-    "receipt as proof of payment."
+    "Assalam-o-Alaikum! Your admission details are complete. "
+    "Please pay your fee using one of these methods:\n"
+    "- Faysal Bank: PK75FAYS3286301000005585 (Account holder: Muhammad Javaid)\n"
+    "- JazzCash: 0300-1864920 (Muhammad Javaid)\n"
+    "- Easypaisa: 0345-0668111 (Muhammad Javaid)\n\n"
+    "After payment, send a clear photo/screenshot of the fee receipt as proof of payment."
 )
 
 FEE_RECEIVED_REPLY = (
@@ -251,50 +254,57 @@ class AdmissionAgent:
 
     async def _generate(self, messages: List[Dict[str, Any]]) -> str:
         provider = self._provider()
-        if provider == "groq":
-            completion = await self.groq_client.chat.completions.create(
-                model=settings.groq_model,
-                messages=messages,
-                temperature=0.7,
-                max_tokens=400,
-            )
-            return completion.choices[0].message.content or DEFAULT_REPLY_WITHOUT_KEY
-        if provider == "openai":
-            completion = await self.client.chat.completions.create(
-                model=settings.openai_model,
-                messages=messages,
-                temperature=0.7,
-                max_tokens=400,
-            )
-            return completion.choices[0].message.content or DEFAULT_REPLY_WITHOUT_KEY
+        try:
+            if provider == "groq":
+                completion = await self.groq_client.chat.completions.create(
+                    model=settings.groq_model,
+                    messages=messages,
+                    temperature=0.7,
+                    max_tokens=400,
+                )
+                return completion.choices[0].message.content or DEFAULT_REPLY_WITHOUT_KEY
+            if provider == "openai":
+                completion = await self.client.chat.completions.create(
+                    model=settings.openai_model,
+                    messages=messages,
+                    temperature=0.7,
+                    max_tokens=400,
+                )
+                return completion.choices[0].message.content or DEFAULT_REPLY_WITHOUT_KEY
+        except Exception:
+            logger.exception("LLM chat completion failed; returning safe fallback.")
         return DEFAULT_REPLY_WITHOUT_KEY
 
     async def _generate_json(self, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
         provider = self._provider()
-        if provider == "groq":
-            completion = await self.groq_client.chat.completions.create(
-                model=settings.groq_model,
-                messages=messages,
-                temperature=0.0,
-                max_tokens=500,
-            )
-        elif provider == "openai":
-            completion = await self.client.chat.completions.create(
-                model=settings.openai_model,
-                messages=messages,
-                temperature=0.0,
-                max_tokens=500,
-            )
-        else:
-            return {}
-        content = completion.choices[0].message.content or "{}"
         try:
-            parsed = json.loads(content)
-            if isinstance(parsed, dict):
-                return {k: v for k, v in parsed.items() if v}
-        except (ValueError, TypeError):
+            if provider == "groq":
+                completion = await self.groq_client.chat.completions.create(
+                    model=settings.groq_model,
+                    messages=messages,
+                    temperature=0.0,
+                    max_tokens=500,
+                )
+            elif provider == "openai":
+                completion = await self.client.chat.completions.create(
+                    model=settings.openai_model,
+                    messages=messages,
+                    temperature=0.0,
+                    max_tokens=500,
+                )
+            else:
+                return {}
+            content = completion.choices[0].message.content or "{}"
+            try:
+                parsed = json.loads(content)
+                if isinstance(parsed, dict):
+                    return {k: v for k, v in parsed.items() if v}
+            except (ValueError, TypeError):
+                return {}
             return {}
-        return {}
+        except Exception:
+            logger.exception("LLM JSON generation failed; returning empty fallback.")
+            return {}
 
     async def _extract_details_llm(self, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
         if not self._has_llm():
