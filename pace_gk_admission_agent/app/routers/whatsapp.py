@@ -207,8 +207,48 @@ async def _handle_admin_command(text: str, sender_phone: str) -> Optional[str]:
     if not parts:
         return None
     command = parts[0].upper()
-    if command not in ("APPROVE", "REJECT"):
+    if command not in ("APPROVE", "REJECT", "SETLINK", "LISTBATCHES"):
         return None
+
+    # SETLINK <batch_code> <community_link_url>  — set the WhatsApp community
+    # group joining link for a batch. Only admins can run this.
+    if command == "SETLINK":
+        if len(parts) < 3:
+            return (
+                "Usage: SETLINK <batch_code> <community_link_url>\n"
+                "Example: SETLINK NOV26-1A https://chat.whatsapp.com/ABC123"
+            )
+        batch_code = parts[1].upper()
+        community_link = " ".join(parts[2:])
+        db = SessionLocal()
+        try:
+            batch = (
+                db.query(Batch).filter(Batch.batch_code == batch_code).first()
+            )
+            if batch is None:
+                return f"Batch {batch_code} not found."
+            batch.community_link = community_link
+            db.commit()
+            return (
+                f"Community link set for {batch_code} ({batch.name}):\n{community_link}"
+            )
+        finally:
+            db.close()
+
+    # LISTBATCHES — show all batches with their codes, names and community links.
+    if command == "LISTBATCHES":
+        db = SessionLocal()
+        try:
+            batches = db.query(Batch).order_by(Batch.batch_code).all()
+            if not batches:
+                return "No batches found."
+            lines = ["Batches (code | name | community link):"]
+            for b in batches:
+                link = b.community_link or "(not set)"
+                lines.append(f"{b.batch_code} | {b.name} | {link}")
+            return "\n".join(lines)
+        finally:
+            db.close()
 
     if len(parts) < 2:
         return (
