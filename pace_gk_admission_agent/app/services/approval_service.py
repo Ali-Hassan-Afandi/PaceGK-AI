@@ -83,6 +83,25 @@ def approve_student(
     # Human-verified payment (the admin is the verifier).
     mark_fee_paid(db, student, "Yes")
 
+    # Assign roll number based on registration serial within the batch.
+    # Earlier registrants (by submitted_at, then id) get lower roll numbers.
+    if student.roll_number is None:
+        earlier = (
+            db.query(Student)
+            .filter(Student.batch_id == student.batch_id)
+            .filter(Student.status.in_(["APPROVED", "CONFIRMED"]))
+            .filter(Student.roll_number.isnot(None))
+            .all()
+        )
+        # Count those registered before this student (by submitted_at, then id).
+        count_before = 0
+        for s in earlier:
+            s_submitted = s.submitted_at or s.id
+            cur_submitted = student.submitted_at or student.id
+            if (s_submitted, s.id) < (cur_submitted, student.id):
+                count_before += 1
+        student.roll_number = count_before + 1
+
     student.status = "APPROVED"
     student.approved_by = normalize_phone(admin_number)
     student.approved_at = now_utc()

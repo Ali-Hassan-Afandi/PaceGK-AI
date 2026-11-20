@@ -304,10 +304,12 @@ async def _handle_admin_command(text: str, sender_phone: str) -> Optional[str]:
 
             # Confirmation message (idempotent: only sent once).
             if not student.confirmation_sent_at:
+                roll = f"Your roll number: {student.roll_number}. " if student.roll_number else ""
                 confirmation = (
                     f"Congratulations! Your application for "
                     f"{batch.name if batch else 'the batch'} "
                     f"(category {category}) has been approved. "
+                    f"{roll}"
                     "Please join the community via the link we sent."
                 )
                 if await _send_to_student(student.phone_number, confirmation):

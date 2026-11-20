@@ -68,6 +68,11 @@ def ensure_schema(db=None) -> None:
                     )
                 )
                 db.commit()
+            if not _column_exists(db, "students", "roll_number"):
+                db.execute(
+                    text("ALTER TABLE students ADD COLUMN roll_number INTEGER")
+                )
+                db.commit()
     finally:
         if close_db:
             db.close()

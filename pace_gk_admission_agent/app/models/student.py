@@ -25,6 +25,9 @@ class Student(Base):
     approved_by = Column(String, nullable=True)
     approved_at = Column(DateTime, nullable=True)
     rejection_reason = Column(String, nullable=True)
+    # Roll number assigned on approval based on registration serial (order of
+    # registration within the batch). Starts at 1 for the earliest registrant.
+    roll_number = Column(Integer, nullable=True)
     # Notification tracking: records whether the WhatsApp API accepted each
     # outbound notification. CONFIRMED is only set once these are accepted.
     confirmation_sent_at = Column(DateTime, nullable=True)
